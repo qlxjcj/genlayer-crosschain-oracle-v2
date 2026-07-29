@@ -61,9 +61,7 @@ Respond ONLY in this JSON format:
     "values": dict,
     "confidence": int,
     "sources_used": int,
-    "warnings": [str],
-    "median_source_count": int,
-    "deviation_detected": bool
+    "warnings": [str]
 }}
 """
             result = gl.exec_prompt(task).replace("```json", "").replace("```", "")
@@ -71,6 +69,19 @@ Respond ONLY in this JSON format:
 
         result_json = json.loads(gl.eq_principle_strict_eq(fetch_and_aggregate))
         return result_json
+
+    def _compute_deviation(self, values: dict, threshold: u256) -> bool:
+        nums = []
+        for v in values.values():
+            try:
+                nums.append(float(str(v)))
+            except Exception:
+                pass
+        if len(nums) < 2:
+            return False
+        nums.sort()
+        spread = nums[-1] - nums[0]
+        return spread > threshold
 
     @gl.public.write
     def create_feed(self, description: str, sources_json: str, schema_json: str, max_staleness: u256, deviation_threshold: u256):
@@ -92,38 +103,56 @@ Respond ONLY in this JSON format:
             raise Exception("Feed not found")
 
         result = self._aggregate_from_sources(feed_data["sources"], feed_data["schema"])
+        deviation = self._compute_deviation(result["values"], feed_data["deviation_threshold"])
+
+        ts = str(gl.message.timestamp)
         feed_data["last_value"] = json.dumps(result)
-        feed_data["last_updated"] = str(gl.message.timestamp)
+        feed_data["last_updated"] = ts
         feed_data["update_count"] += 1
         self.feeds[feed_id] = json.dumps(feed_data)
 
         history = json.loads(self.feed_history.get(feed_id, "[]"))
         entry = {
-            "timestamp": str(gl.message.timestamp),
+            "timestamp": ts,
             "value": result["values"],
             "confidence": result["confidence"],
-            "deviation": result.get("deviation_detected", False),
+            "deviation": deviation,
         }
         history.append(entry)
         if len(history) > 20:
             history = history[-20:]
         self.feed_history[feed_id] = json.dumps(history)
 
-    @gl.public.write
-    def check_staleness(self, feed_id: str) -> dict:
+    @gl.public.view
+    def get_latest_value(self, feed_id: str) -> str:
         feed_data = json.loads(self.feeds.get(feed_id, "{}"))
         if not feed_data:
-            raise Exception("Feed not found")
-
-        current_time = self._now()
-        last_update = int(feed_data["last_updated"])
-        is_stale = (current_time - last_update) > feed_data["max_staleness"]
-
-        return {"feed_id": feed_id, "is_stale": is_stale, "seconds_since_update": current_time - last_update, "max_staleness": feed_data["max_staleness"]}
+            return "{}"
+        now = int(str(gl.message.timestamp))
+        last = int(feed_data["last_updated"])
+        is_stale = (now - last) > feed_data["max_staleness"]
+        return json.dumps({
+            "feed_id": feed_id,
+            "value": json.loads(feed_data["last_value"]),
+            "updated": feed_data["last_updated"],
+            "update_count": feed_data["update_count"],
+            "is_stale": is_stale,
+        })
 
     @gl.public.view
-    def _now(self) -> u256:
-        return self.feed_count + 1000000
+    def check_staleness(self, feed_id: str) -> str:
+        feed_data = json.loads(self.feeds.get(feed_id, "{}"))
+        if not feed_data:
+            return "{}"
+        now = int(str(gl.message.timestamp))
+        last = int(feed_data["last_updated"])
+        is_stale = (now - last) > feed_data["max_staleness"]
+        return json.dumps({
+            "feed_id": feed_id,
+            "is_stale": is_stale,
+            "seconds_since_update": now - last,
+            "max_staleness": feed_data["max_staleness"],
+        })
 
     @gl.public.write
     def subscribe(self, feed_id: str):
@@ -141,19 +170,6 @@ Respond ONLY in this JSON format:
     @gl.public.view
     def get_feed(self, feed_id: str) -> str:
         return self.feeds.get(feed_id, "{}")
-
-    @gl.public.view
-    def get_latest_value(self, feed_id: str) -> str:
-        feed_data = json.loads(self.feeds.get(feed_id, "{}"))
-        if not feed_data:
-            return "{}"
-        return json.dumps({
-            "feed_id": feed_id,
-            "value": json.loads(feed_data["last_value"]),
-            "updated": feed_data["last_updated"],
-            "update_count": feed_data["update_count"],
-            "is_stale": False,
-        })
 
     @gl.public.view
     def get_feed_history(self, feed_id: str, limit: u256) -> str:
