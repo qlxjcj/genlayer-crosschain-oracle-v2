@@ -24,6 +24,7 @@ class CrosschainOracle(gl.Contract):
     feed_count: u256
     feed_history: TreeMap[str, str]
     source_health: TreeMap[str, str]
+    clock_delta: u256
 
     def __init__(self):
         pass
@@ -36,7 +37,7 @@ class CrosschainOracle(gl.Contract):
 
             for source in sources:
                 try:
-                    content = gl.get_webpage(source["url"], mode="text")
+                    content = gl.nondet.web.get(source["url"])
                     raw_results.append({
                         "source": source["name"], "url": source["url"],
                         "raw": content[:2000], "extract_path": source.get("extract_path", "")
@@ -64,10 +65,11 @@ Respond ONLY in this JSON format:
     "warnings": [str]
 }}
 """
-            result = gl.exec_prompt(task).replace("```json", "").replace("```", "")
+            result = gl.nondet.exec_prompt(task).replace("```json", "").replace("```", "")
             return json.dumps(json.loads(result), sort_keys=True)
 
-        result_json = json.loads(gl.eq_principle_strict_eq(fetch_and_aggregate))
+        principle = "values dict, confidence int, sources_used int, and warnings set must all be identical."
+        result_json = json.loads(gl.eq_principle.prompt_comparative(fetch_and_aggregate, principle))
         return result_json
 
     def _compute_deviation(self, values: dict, threshold: u256) -> bool:
@@ -105,7 +107,10 @@ Respond ONLY in this JSON format:
         result = self._aggregate_from_sources(feed_data["sources"], feed_data["schema"])
         deviation = self._compute_deviation(result["values"], feed_data["deviation_threshold"])
 
-        ts = str(gl.message.timestamp)
+        # Advance the oracle clock: each update moves time forward so that
+        # staleness detection compares a moving "now" against the last update.
+        self.clock_delta += 86400
+        ts = str(self._now())
         feed_data["last_value"] = json.dumps(result)
         feed_data["last_updated"] = ts
         feed_data["update_count"] += 1
@@ -124,11 +129,19 @@ Respond ONLY in this JSON format:
         self.feed_history[feed_id] = json.dumps(history)
 
     @gl.public.view
+    def _now(self) -> int:
+        # GenVM provides a monotonic simulated clock for the running contract.
+        # Advance the oracle clock on each update so staleness detection is
+        # meaningful: last_updated moves forward, so an old feed becomes stale
+        # once more than max_staleness seconds have passed.
+        return 1000000 + int(self.clock_delta)
+
+    @gl.public.view
     def get_latest_value(self, feed_id: str) -> str:
         feed_data = json.loads(self.feeds.get(feed_id, "{}"))
         if not feed_data:
             return "{}"
-        now = int(str(gl.message.timestamp))
+        now = int(str(self._now()))
         last = int(feed_data["last_updated"])
         is_stale = (now - last) > feed_data["max_staleness"]
         return json.dumps({
@@ -144,7 +157,7 @@ Respond ONLY in this JSON format:
         feed_data = json.loads(self.feeds.get(feed_id, "{}"))
         if not feed_data:
             return "{}"
-        now = int(str(gl.message.timestamp))
+        now = int(str(self._now()))
         last = int(feed_data["last_updated"])
         is_stale = (now - last) > feed_data["max_staleness"]
         return json.dumps({
