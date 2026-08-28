@@ -40,20 +40,20 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
 <div class="container">
   <div class="header">
     <div>
-      <h1>🔗 Crosschain Oracle</h1>
+      <h1>Crosschain Oracle</h1>
       <div style="font-size:11px;color:#666;margin-top:4px;">Multi-source AI oracle · Feed history · Staleness detection</div>
     </div>
     <div style="display:flex;gap:10px;align-items:center;">
-      <a class="explorer-link" href="https://explorer-bradbury.genlayer.com/address/0xf2e32c8550C0C48F2C0D5020fcB19F916B9ad3FE" target="_blank">View on Explorer ↗</a>
+      <a class="explorer-link" href="https://explorer-bradbury.genlayer.com/address/0x6E7481B254C52F644e89Cb7B5728D79B96CB0abE" target="_blank">View on Explorer</a>
       <button class="btn btn-outline btn-sm" id="connectBtn">Connect Wallet</button>
     </div>
   </div>
 
   <div class="stats-grid">
-    <div class="stat"><div class="num" id="sTotal">—</div><div class="label">Feeds</div></div>
-    <div class="stat"><div class="num" id="sUpdated">—</div><div class="label">Total Updates</div></div>
-    <div class="stat"><div class="num" id="sFresh">—</div><div class="label">Fresh</div></div>
-    <div class="stat"><div class="num" id="sStale">—</div><div class="label">Stale</div></div>
+    <div class="stat"><div class="num" id="sTotal">-</div><div class="label">Feeds</div></div>
+    <div class="stat"><div class="num" id="sUpdated">-</div><div class="label">Total Updates</div></div>
+    <div class="stat"><div class="num" id="sFresh">-</div><div class="label">Fresh</div></div>
+    <div class="stat"><div class="num" id="sStale">-</div><div class="label">Stale</div></div>
   </div>
 
   <div class="card">
@@ -87,29 +87,31 @@ body { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', sans-serif; b
   </div>
 </div>
 
-<script src="https://cdn.jsdelivr.net/npm/ethers@5.7/dist/ethers.umd.min.js"></script>
-<script>
-const CONTRACT = '0xf2e32c8550C0C48F2C0D5020fcB19F916B9ad3FE';
-const RPC = 'https://rpc-bradbury.genlayer.com';
-const ABI = [
-  'function create_feed(string description, string sources_json, string schema_json, uint256 max_staleness, uint256 deviation_threshold)',
-  'function update_feed(string feed_id)',
-  'function subscribe(string feed_id)',
-  'function get_latest_value(string feed_id) view returns (string)',
-  'function check_staleness(string feed_id) view returns (string)',
-  'function get_feed_history(string feed_id, uint256 limit) view returns (string)',
-  'function get_feed_count() view returns (uint256)',
-  'function list_feeds() view returns (tuple(string,uint256,string,uint256)[])',
-];
-let contract, account;
+<script type="module">
+import { createClient } from 'https://cdn.jsdelivr.net/npm/genlayer-js@1.1.8/+esm';
+
+const CONTRACT = '0x6E7481B254C52F644e89Cb7B5728D79B96CB0abE';
+
+const readClient = createClient({
+  chain: { id: 2365, name: 'Bradbury', rpcUrls: { default: { http: ['https://rpc-bradbury.genlayer.com'] } }, nativeCurrency: { name: 'GEN', symbol: 'GEN', decimals: 18 } }
+});
+
+let writeClient = null;
+let account = null;
 
 async function connectWallet() {
-  if (!window.ethereum) return alert('Install MetaMask');
+  if (!window.ethereum) throw new Error('Install MetaMask');
   await window.ethereum.request({ method: 'eth_requestAccounts' });
-  const provider = new ethers.providers.Web3Provider(window.ethereum);
-  const signer = provider.getSigner();
-  account = await signer.getAddress();
-  contract = new ethers.Contract(CONTRACT, ABI, signer);
+  const accounts = await window.ethereum.request({ method: 'eth_accounts' });
+  account = accounts[0];
+
+  writeClient = createClient({
+    chain: { id: 2365, name: 'Bradbury', rpcUrls: { default: { http: ['https://rpc-bradbury.genlayer.com'] } }, nativeCurrency: { name: 'GEN', symbol: 'GEN', decimals: 18 } },
+    account: account,
+    provider: window.ethereum
+  });
+
+  await writeClient.connect('testnetBradbury');
   return account;
 }
 
@@ -122,20 +124,33 @@ document.getElementById('connectBtn').onclick = async () => {
   } catch(e) { toast(e.message, 'error'); }
 };
 
-async function genCall(method, args) {
-  const res = await fetch(RPC, {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ jsonrpc: '2.0', id: 1, method: 'gen_call', params: [{ to: CONTRACT, function: method, args: args }] })
+async function readContract(method, args) {
+  const result = await readClient.readContract({
+    address: CONTRACT,
+    functionName: method,
+    args: args
   });
-  const data = await res.json();
-  if (data.error) throw new Error(data.error.message || JSON.stringify(data.error));
-  return data.result;
+  return result;
+}
+
+async function writeContract(method, args) {
+  if (!writeClient) await connectWallet();
+  const txHash = await writeClient.writeContract({
+    address: CONTRACT,
+    functionName: method,
+    args: args,
+    value: 0n
+  });
+  const receipt = await writeClient.waitForTransactionReceipt({
+    hash: txHash,
+    status: 'ACCEPTED'
+  });
+  return { hash: txHash, receipt };
 }
 
 async function loadFeeds() {
   try {
-    const list = await genCall('list_feeds', []);
+    const list = await readContract('list_feeds', []);
     const entries = Object.entries(list);
     document.getElementById('sTotal').textContent = entries.length;
     let updates = 0;
@@ -147,8 +162,8 @@ async function loadFeeds() {
       </div>`;
     }).join('') || '<span style="color:#666">No feeds yet</span>';
     document.getElementById('sUpdated').textContent = updates;
-    document.getElementById('sFresh').textContent = '—';
-    document.getElementById('sStale').textContent = '—';
+    document.getElementById('sFresh').textContent = '-';
+    document.getElementById('sStale').textContent = '-';
     document.getElementById('feedsList').innerHTML = html;
   } catch(e) {
     document.getElementById('feedsList').innerHTML = '<span style="color:#666">Could not load feeds</span>';
@@ -164,25 +179,21 @@ document.getElementById('createBtn').onclick = async () => {
   if (!desc || !sources || !schema || !maxStale || !dev) return toast('Fill all fields', 'error');
   try { JSON.parse(sources); JSON.parse(schema); } catch(e) { return toast('Sources/Schema must be valid JSON', 'error'); }
   try {
-    if (!contract) await connectWallet();
-    const tx = await contract.create_feed(desc, sources, schema, maxStale, dev);
-    document.getElementById('createStatus').innerHTML = `<span style="color:#16a34a;">Feed created! <a class="explorer-link" href="https://explorer-bradbury.genlayer.com/tx/${tx.hash}" target="_blank">${tx.hash.slice(0,10)}...</a></span>`;
-    await tx.wait();
+    const { hash } = await writeContract('create_feed', [desc, sources, schema, BigInt(maxStale), BigInt(dev)]);
+    document.getElementById('createStatus').innerHTML = `<span style="color:#16a34a;">Feed created! <a class="explorer-link" href="https://explorer-bradbury.genlayer.com/tx/${hash}" target="_blank">${hash.slice(0,10)}...</a></span>`;
     toast('Feed created!', 'success');
     loadFeeds();
-  } catch(e) { toast(e.reason || e.message, 'error'); }
+  } catch(e) { toast(e.message, 'error'); }
 };
 
 document.getElementById('updateBtn').onclick = async () => {
   const id = document.getElementById('feedId').value.trim();
   if (!id) return toast('Enter feed ID', 'error');
   try {
-    if (!contract) await connectWallet();
-    const tx = await contract.update_feed(id);
-    await tx.wait();
+    await writeContract('update_feed', [id]);
     toast('Feed updated via AI consensus!', 'success');
     loadFeeds();
-  } catch(e) { toast(e.reason || e.message, 'error'); }
+  } catch(e) { toast(e.message, 'error'); }
 };
 
 document.getElementById('latestBtn').onclick = async () => {
@@ -191,7 +202,7 @@ document.getElementById('latestBtn').onclick = async () => {
   const out = document.getElementById('detailBox');
   out.textContent = 'Loading...';
   try {
-    const v = await genCall('get_latest_value', [id]);
+    const v = await readContract('get_latest_value', [id]);
     out.textContent = JSON.stringify(JSON.parse(v), null, 2);
   } catch(e) { out.textContent = 'Could not read: ' + e.message; }
 };
@@ -202,7 +213,7 @@ document.getElementById('staleBtn').onclick = async () => {
   const out = document.getElementById('detailBox');
   out.textContent = 'Loading...';
   try {
-    const v = await genCall('check_staleness', [id]);
+    const v = await readContract('check_staleness', [id]);
     out.textContent = JSON.stringify(JSON.parse(v), null, 2);
   } catch(e) { out.textContent = 'Could not read: ' + e.message; }
 };
@@ -213,7 +224,7 @@ document.getElementById('historyBtn').onclick = async () => {
   const out = document.getElementById('detailBox');
   out.textContent = 'Loading...';
   try {
-    const v = await genCall('get_feed_history', [id, 10]);
+    const v = await readContract('get_feed_history', [id, BigInt(10)]);
     out.textContent = JSON.stringify(JSON.parse(v), null, 2);
   } catch(e) { out.textContent = 'Could not read: ' + e.message; }
 };
@@ -222,11 +233,9 @@ document.getElementById('subscribeBtn').onclick = async () => {
   const id = document.getElementById('feedId').value.trim();
   if (!id) return toast('Enter feed ID', 'error');
   try {
-    if (!contract) await connectWallet();
-    const tx = await contract.subscribe(id);
-    await tx.wait();
+    await writeContract('subscribe', [id]);
     toast('Subscribed!', 'success');
-  } catch(e) { toast(e.reason || e.message, 'error'); }
+  } catch(e) { toast(e.message, 'error'); }
 };
 
 function toast(msg, type) {
