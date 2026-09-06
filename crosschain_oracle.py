@@ -37,7 +37,7 @@ class CrosschainOracle(gl.Contract):
 
             for source in sources:
                 try:
-                    content = gl.nondet.web.get(source["url"])
+                    content = gl.nondet.web.render(source["url"])
                     raw_results.append({
                         "source": source["name"], "url": source["url"],
                         "raw": content[:2000], "extract_path": source.get("extract_path", "")
